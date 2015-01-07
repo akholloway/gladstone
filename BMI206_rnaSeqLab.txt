@@ -1,0 +1,260 @@
+################################
+#
+#	DATASET - RNA-seq
+#
+################################
+
+# 3 patients with Alzheimer's Disease
+# 3 control patients
+
+# Questions:
+	# Can we identify genes that are differentially expressed between AD and control patients?
+	# Is over- or under-expression associated with AD?
+
+################################
+#
+#	BASE DIRECTORY
+#
+################################
+
+# set path to folder with lab data
+
+baseDir=<PATH_TO_FOLDER>/BMI206_rnaSeqLab/
+
+
+################################
+#
+#	FASTQ - raw data
+#
+################################
+
+fastq=$baseDir/fastq/
+
+gunzip -c $fastq/mtBC07.fq.gz | head
+
+
+################################
+#
+#	TRIM ADAPTER SEQUENCES - skip
+#
+################################
+
+# ea-utils: https://code.google.com/p/ea-utils/
+# fastq-mcf is used to trim adapter sequences from reads
+
+# example for paired-end data
+
+#d=$baseDir/fastq
+#adapt=$baseDir/x.defaultAdapters.txt
+#
+#for f in $d/*pair1.fq.gz; do
+#	echo $f
+#	base=`basename $f`
+#	echo $base
+#	filebase=${base%_pair1.fq.gz}
+#	echo $filebase
+#	r2=$filebase"_pair2.fq.gz"
+#	echo $r2
+#
+#	fastq-mcf \
+#	  -o $d/$filebase"_clean.pair1.fq.gz" \
+#	  -o $d/$filebase"_clean.pair2.fq.gz" \
+#	  -f $adapt \
+#	  <(gunzip -c $f;) \
+#	  <(gunzip -c $d/$r2;) \
+#	  > $base.fastqmcf_log.txt
+#done
+
+
+################################
+#
+#	FASTQC - initial QC
+#
+################################
+
+# http://www.bioinformatics.babraham.ac.uk/projects/fastqc/
+
+# MAC DMG
+# wget http://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.2.dmg
+
+# OR
+
+# Win/Linux zip
+# wget http://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.11.2.zip
+
+cd $fastq/
+for i in *gz; do
+   fastqc $i
+done
+
+
+################################
+#
+#	ANNOTATION
+#
+################################
+
+anno=$baseDir/anno/hg19.ens68.chr21.25-48m.proteinCoding.gtf
+
+head $anno
+
+# about 214 genes
+
+
+################################
+#
+#	GENOME FASTA & BOWTIE INDEX - skip
+#
+################################
+
+# cd $baseDir/bowtieIndex/
+# bowtie2-build hg19chr21.fa hg19chr21
+
+# this command builds an index for bowtie to search the genome
+
+
+################################
+#
+#	TOPHAT2 & BOWTIE2 - splice-aware alignment
+#
+################################
+
+# install latest bowtie2 v2.2.3
+# http://sourceforge.net/projects/bowtie-bio/files/bowtie2/2.2.3/
+
+# install latest tophat v2.0.13
+# http://ccb.jhu.edu/software/tophat/tutorial.shtml
+# binaries available for Linux and Mac OSX; use source for other operating systems
+
+# go through tophat tutorial to make sure everything works
+
+
+tophat=$baseDir/tophatOut/
+transcIndex=$baseDir/transc.hg19chr21/known
+bowtieIndex=$baseDir/bowtieIndex/hg19chr21
+
+# build transcript index
+# use bowtie index for chr21 and ensembl v68 annotation for chr21
+tophat --GTF $anno --transcriptome-index=$transcIndex $bowtieIndex
+    
+# run tophat on all fastq files	
+for f in $fastq/*.gz; do
+   base=`basename $f`
+   base=${base%.fq.gz}
+   mkdir $tophat/$base.tophatOut/
+   outDir=$tophat/$base.tophatOut/
+   tophat --transcriptome-index $transcIndex --output-dir $outDir $bowtieIndex $f
+   # rename the alignment file to something meaningful
+   mv $tophat/$base.tophatOut/accepted_hits.bam $tophat/$base.tophatOut/$base.bam
+   # move the unmapped read file to ./logs
+   mv $tophat/$base.tophatOut/unmapped.bam $tophat/$base.tophatOut/logs/unmapped.bam
+done
+
+ls -lh $tophat/$base.tophatOut
+
+################################
+#
+#	SAMTOOLS - map quality filter, viewing bam, indexing, & other useful functions
+#
+################################
+
+# install latest samtools v1.1
+# wget http://sourceforge.net/projects/samtools/files/samtools/1.1/samtools-1.1.tar.bz2
+
+# manual http://www.htslib.org/doc/samtools-1.1.html
+
+# "-q" is for quality filter
+# samtools view -q <INTEGER>
+
+samtools view $tophat/$base.tophatOut/$base.bam | head -n3
+
+
+################################
+#
+#	RSeQC - QC aligned reads
+#
+################################
+
+# install RSeQC v2.4
+# http://rseqc.sourceforge.net/
+
+# wget http://sourceforge.net/projects/rseqc/files/RSeQC-2.4.tar.gz
+
+## Human hg19 annotation in RSeQC format
+# wget http://dldcc-web.brc.bcm.edu/lilab/liguow/RSeQC/dat/hg19_Ensembl.bed.gz
+# gunzip hg19_Ensembl.bed.gz
+# grep chr21 hg19_Ensembl.bed | awk '{if($2>=25000000) print $0}' > hg19_Ensembl.chr21.25-48m.bed
+
+refbed=$baseDir/anno/hg19_Ensembl.chr21.25-48m.bed
+
+for f in $tophat/*/*.bam; do
+   samtools index ${f}
+   
+   python2.7 `which bam_stat.py`               --mapq=30 -i ${f} &> ${f}_stats.txt
+   python2.7 `which infer_experiment.py`    -r ${refbed} -i ${f} &> ${f}_inferred_experiment.txt
+   python2.7 `which read_distribution.py`   -r ${refbed} -i ${f} &> ${f}_read_dist.txt
+   python2.7 `which geneBody_coverage.py`   -r ${refbed} -i ${f} -o ${f}_genebody
+   python2.7 `which junction_annotation.py` -r ${refbed} -i ${f} -o ${f}_junction
+   python2.7 `which junction_saturation.py` -r ${refbed} -i ${f} -o ${f}_junct_saturation
+   python2.7 `which RPKM_saturation.py`     -r ${refbed} -i ${f} -o ${f}_saturation
+   python2.7 `which read_duplication.py`                 -i ${f} -o ${f}_duplication
+   python2.7 `which read_NVC.py`                    --nx -i ${f} -o ${f}_nvc
+done
+
+
+################################
+#
+#	HTSEQ-COUNT & PICARD - sort by coordinates and count up reads for each gene
+#
+################################
+
+# Picard tools - includes SortSam
+# http://broadinstitute.github.io/picard/
+# wget https://github.com/broadinstitute/picard/releases/download/1.122/picard-tools-1.122.zip
+
+# install latest version HTSeq v0.6.1p2
+# http://www-huber.embl.de/users/anders/HTSeq/doc/install.html
+
+# Documentation for htseq-count
+# http://www-huber.embl.de/users/anders/HTSeq/doc/count.html
+
+# either designate the Picard directory or make sure the path to the jar files is in your PATH
+picardDir=<PATH_TO_PICARD_JAR>
+
+
+mkdir $baseDir/counts
+out=$baseDir/counts
+
+for file in $tophat/*/*.bam; do
+   base=`basename $file`
+   base=${base%.bam}
+   java -Xmx8g -jar $picardDir/SortSam.jar SORT_ORDER=queryname INPUT=$file OUTPUT=$file.sort.sam
+   htseq-count --mode=intersection-nonempty --stranded=no --minaqual=3 --type=exon --idattr=gene_id $file.sort.sam $anno > $out/$base.counts.txt
+done
+
+
+# make a header for the all.counts file
+cd $out
+ls *.counts.txt | perl -pe "s/\.counts\.txt//g" | perl -pe "s/\n/\t/g" | awk '{print "geneID\t"$0}' > $out/header
+
+# get your gene list
+cut -f1 *.counts.txt | grep -v "__" | sort -u > genes
+cp genes tmp.counts
+
+# put counts for each sample together into one file
+for i in *.counts.txt; do
+   join -1 1 -2 1 tmp.counts $i | perl -pe "s/ /\t/g" > tmp
+   mv tmp tmp.counts
+done
+cat header tmp.counts | perl -pe "s/\_\d+//g" | perl -pe "s/\t$//g" > all.counts.txt
+rm tmp.counts
+
+head all.counts.txt
+
+
+##########################		MOVE TO RStudio		##########################
+
+# runEdgeR.R
+
+
+##########################			EOF				##########################
